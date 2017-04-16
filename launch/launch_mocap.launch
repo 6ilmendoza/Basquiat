@@ -19,5 +19,6 @@
   <node pkg="optitrack" type="mocap_pose.py"  name="mocap_pose" respawn="true" >
   </node>
 
+  export ROS_MASTER_URI='http://192.168.1.141:11311'
   
 </launch>
