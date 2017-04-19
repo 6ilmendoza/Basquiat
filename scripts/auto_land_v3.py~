@@ -14,9 +14,13 @@ from geometry_msgs.msg import *
 from mavros_msgs.msg import *
 from mavros_msgs.srv import *
 
+from helpers import *
 
 import matplotlib.pyplot as plt
+import scipy.linalg as sp
 from scipy.optimize import least_squares
+from cvxopt import matrix, solvers
+
 
 
 ###################################
@@ -102,23 +106,8 @@ class mpc_landing:
 		self.curr_pos.lantar.y = 0
 		self.curr_pos.lantar.z = 0
 
-def get_pos_data(data):
-	output = np.zeros((3,1),dtype=np.double)
-	output[0] = data.pose.position.x
-	output[1] = data.pose.position.y
-	output[2] = data.pose.position.z
-
-	return np.transpose(output)
-
-def circ_func(c,x_data,y_data):
-	return np.array((x_data - c[0])**(2) +(y_data-c[1])**(2) -c[2]**(2))
-
-def circ_fit(x0,x_data,y_data):
-	sol = least_squares(circ_func,x0, args=(x_data,y_data),bounds=([-np.inf,-np.inf, 0.0],np.inf))
-	return sol
-	
-
 def main():
+
 	# node name
 	rospy.init_node('auto_land', anonymous=True)
 	rate = rospy.Rate(10) # Hz
@@ -145,6 +134,19 @@ def main():
 	#Cycle to downsample the update rate
 	kd = 0
 
+
+	###Params#####
+	vel = 2
+	ini_pos = np.matrix([1,2,1])
+	Ts = 0.5
+	horizon = 10
+	offset = np.matrix([0,0,0])
+	center = np.matrix([0,0])
+	x0 = np.asmatrix(np.zeros(([9,1])))
+
+	[A,B,C] = load_model()
+	solvers.options['show_progress'] = False
+
 	while not rospy.is_shutdown():
 	
 		if rBody.tracking_valid :
@@ -161,12 +163,58 @@ def main():
 				print "Center: ", h , k
 				print "Radius: ", rad
 				
+				center = np.matrix([h,k])
+				ini_pos = np.matrix(pos_record[3:,0]) #Lantar's latest position
+				offset = np.matrix(pos_record[0:3,0]) #MAV's latest position 
+				y_ref = ref_traj_est(vel, ini_pos,Ts,horizon,offset,center)
+
+				[M,D] = get_M(A,B,C,horizon,x0)
+
+				Aeq = matrix(M)
+				beq = matrix(D - M*y_ref)
+
+
+				dU = dUmat(horizon)
+
+				U_weights = 20*np.identity(3*horizon) + dU.T*np.identity(3*(horizon-1))*dU
+
+				H = sp.block_diag(np.identity(3*horizon),U_weights)
+				f = np.zeros((y_ref.size,1))
+				
+				[cols, rows] = H.shape 
+
+				G = np.zeros((rows,rows))
+				h = np.zeros((rows,1))
+
+				H = matrix(H)
+				f = matrix(f)
+				G = matrix(G)
+				h = matrix(h)
+				Aeq = matrix(Aeq)
+				beq = matrix(beq)
+
+				sol = solvers.qp(H,f, G, h, Aeq, beq)
+
+				if (sol['status'] == 'optimal'):
+					act = sol['x']
+					act = act[3*horizon:]
+					act = np.reshape(act,(-1,3))
+
+					new_act = np.asmatrix(act[0,:])
+
+					#print A.shape,x0.shape,B.shape,new_act.shape
+					x0 = A*x0 + B*new_act.T
+					print "success"
+					print " Act: ", new_act
+
+				
 				#print "LanTar: ",pos_record[3:6,0],"\n","Mav",pos_record[0:3,0]	
 					
 				#print "LanTar: ",rBody.lantar.pose.position,"\n","Mav",rBody.mav.pose.position
 			
 				#setp.position = rBody.mavros_msg.pose.position
-				(setp.position.x,setp.position.y,setp.position.z) = (rBody.lantar.pose.position.x,rBody.lantar.pose.position.y,rBody.lantar.pose.position.z + 1.2)
+				#(setp.position.x,setp.position.y,setp.position.z) = (rBody.lantar.pose.position.x,rBody.lantar.pose.position.y,rBody.lantar.pose.position.z + 1.2)
+				(setp.position.x,setp.position.y,setp.position.z) = (new_act[0,0],new_act[0,1],new_act[0,2])
 				#command.publish(setp)
 
 		else:
